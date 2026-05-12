@@ -13,8 +13,6 @@ pip install torch
 
 Please find the download link for the Python-based MODFLOW groundwater modeling suite (https://files.pythonhosted.org/packages/cd/db/25c68f8f945e381a8e406f41324c3a7815bcc9d4399b98fb5b7c1680c86f/modflow_setup-0.6.1.tar.gz). 
 
-Additionally, the binary executable files for MODFLOW (mf6) are available for both Windows and Linux operating systems in the repository.
-
 It is required to install the Python package "FloPy" for MODFLOW to simulate steady-state groundwater heads. 
 
 **Use either "pip install flopy" or "conda forge" to install the FloPy package.**
