@@ -578,14 +578,14 @@ class UnifiedLoss(nn.Module):
         return total, {'total': total.item(), 'seg': l_seg.item(), 'reg': l_reg.item()}
 
 X = np.load("H_matrix.npy"); Y = np.load("K_matrix.npy"); Y_seg = np.load("Fracture_matrix.npy")
-X_reshaped = X.reshape(-1, 100, 100, input_channels)
+X_reshaped = X.reshape(num_sets*3, 100, 100, input_channels)
 X_std = np.zeros_like(X_reshaped); scalers_x = []
 for i in range(input_channels):
     s = StandardScaler().fit(X_reshaped[:,:,:,i].reshape(-1,1)); scalers_x.append(s)
-    X_std[:,:,:,i] = s.transform(X_reshaped[:,:,:,i].reshape(-1,1)).reshape(-1,100,100)
+    X_std[:,:,:,i] = s.transform(X_reshaped[:,:,:,i].reshape(-1,1)).reshape(num_sets*3,100,100)
 scaler_y = StandardScaler().fit(Y.reshape(-1,1))
-Y_std = scaler_y.transform(Y.reshape(-1,1)).reshape(-1, 1, 100, 100)
-X_t = torch.from_numpy(X_std).permute(0,3,1,2).float(); Y_t = torch.from_numpy(Y_std).float(); Y_seg_t = torch.from_numpy(Y_seg).long()
+Y_std = scaler_y.transform(Y.reshape(-1,1)).reshape((num_sets*3),100, 100)
+X_t = torch.from_numpy(X_std).permute(0,3,1,2).float(); Y_t = torch.from_numpy(Y_std).unsqueeze(1).float(); Y_seg_t = torch.from_numpy(Y_seg).long()
 
 # --- Stratified Random Sampling 
 train_0_100 = np.random.choice(np.arange(0, num_sets), int(train_percentage*num_sets), replace=False)
