@@ -232,14 +232,13 @@ for _ in range(num_sets):
          if 0<= int((high_y_cordinates[fracture_lst][cords]/cell_size)) < ny and 0<=int((high_x_cordinates[fracture_lst][cords]/cell_size))< nx:
            hk_high[_,int((high_y_cordinates[fracture_lst][cords]/cell_size)),int((high_x_cordinates[fracture_lst][cords]/cell_size))]=kf
            hk_high_binary[_,int((high_y_cordinates[fracture_lst][cords]/cell_size)),int((high_x_cordinates[fracture_lst][cords]/cell_size))]=float(1)
-#%%           
+         
 grid_size = 9 
 length = 100.0
 x_mon = y_mon = np.linspace(10, 90, grid_size)
 
 grid_x, grid_y = np.meshgrid(x_mon, y_mon)
 # Steady State Groundwater Model
-
 Monitoring_heads=np.ones(np.shape(grid_x))
 nlay, nrow, ncol = 1, 100, 100
 delr = delc = 1.0
@@ -339,6 +338,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score, jaccard_score
+# PI-XNET Algorithm Starts
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset, Subset
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, r2_score, jaccard_score
 
 # --- Constants & Configuration ---
 num_sets = 15000
@@ -377,6 +385,7 @@ class EncoderBlock(nn.Module):
         super().__init__()
         self.conv_block = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            # In the diagram, these are labeled "Block of 3 layers"
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, 3, padding=1),
@@ -407,22 +416,24 @@ class DecoderBlock(nn.Module):
 class PI_XNET(nn.Module):
     def __init__(self, input_channels, num_classes=2):
         super().__init__()
-        self.enc1_r = EncoderBlock(input_channels, 64)
-        self.enc2_r = EncoderBlock(64, 128)
-        self.enc3_r = EncoderBlock(128, 256)
-        self.enc4_r = EncoderBlock(256, 512)
+        # Encoder Streams
+        self.enc1_r = EncoderBlock(input_channels, 64); self.enc1_s = EncoderBlock(input_channels, 64)
+        self.enc2_r = EncoderBlock(64, 128); self.enc2_s = EncoderBlock(64, 128)
+        self.enc3_r = EncoderBlock(128, 256); self.enc3_s = EncoderBlock(128, 256)
+        self.enc4_r = EncoderBlock(256, 512); self.enc4_s = EncoderBlock(256, 512)
         
-        self.enc1_s = EncoderBlock(input_channels, 64)
-        self.enc2_s = EncoderBlock(64, 128)
-        self.enc3_s = EncoderBlock(128, 256)
-        self.enc4_s = EncoderBlock(256, 512)
+        # Explicit Bottleneck Blocks (Added to match diagram)
+        self.bottleneck_r = EncoderBlock(512, 512)
+        self.bottleneck_s = EncoderBlock(512, 512)
         
-        self.enc_cross_r = nn.ModuleList([nn.Conv2d(c, c, 1) for c in [64, 128, 256, 512]])
-        self.enc_cross_s = nn.ModuleList([nn.Conv2d(c, c, 1) for c in [64, 128, 256, 512]])
+        # Cross-connection layers (1x1 Convolutions)
+        self.enc_cross_r = nn.ModuleList([nn.Conv2d(c, c, 1) for c in [64, 128, 256, 512, 512]])
+        self.enc_cross_s = nn.ModuleList([nn.Conv2d(c, c, 1) for c in [64, 128, 256, 512, 512]])
         
         self.pool = nn.MaxPool2d(2, return_indices=True)
         self.unpool = nn.MaxUnpool2d(2, 2)
         
+        # Decoder Streams
         self.dec4_r = DecoderBlock(512 + 512, 512); self.dec4_s = DecoderBlock(512 + 512, 512)
         self.dec3_r = DecoderBlock(256 + 256, 256); self.dec3_s = DecoderBlock(256 + 256, 256)
         self.dec2_r = DecoderBlock(128 + 128, 128); self.dec2_s = DecoderBlock(128 + 128, 128)
@@ -445,14 +456,14 @@ class PI_XNET(nn.Module):
         sz1 = f1_r.size()
         xr, idx1_r = self.pool(f1_r)
         xs, idx1_s = self.pool(f1_s)
-
+        
         f2_r_pre, f2_s_pre = self.enc2_r(xr), self.enc2_s(xs)
         f2_r = f2_r_pre + self.enc_cross_s[1](f2_s_pre)
         f2_s = f2_s_pre + self.enc_cross_r[1](f2_r_pre)
         sz2 = f2_r.size()
         xr, idx2_r = self.pool(f2_r)
         xs, idx2_s = self.pool(f2_s)
-
+        
         f3_r_pre, f3_s_pre = self.enc3_r(xr), self.enc3_s(xs)
         f3_r = f3_r_pre + self.enc_cross_s[2](f3_s_pre)
         f3_s = f3_s_pre + self.enc_cross_r[2](f3_r_pre)
@@ -467,6 +478,13 @@ class PI_XNET(nn.Module):
         xr, idx4_r = self.pool(f4_r)
         xs, idx4_s = self.pool(f4_s)
 
+        bn_r_pre = self.bottleneck_r(xr)
+        bn_s_pre = self.bottleneck_s(xs)
+        
+        xr = bn_r_pre + self.enc_cross_s[4](bn_s_pre)
+        xs = bn_s_pre + self.enc_cross_r[4](bn_r_pre)
+
+    
         ur4 = self.unpool(xr, idx4_r, output_size=sz4)
         us4 = self.unpool(xs, idx4_s, output_size=sz4)
         dr4 = self.dec4_r(torch.cat([ur4, f4_r], dim=1))
@@ -497,7 +515,10 @@ class PI_XNET(nn.Module):
         ds1 = self.dec1_s(torch.cat([us1, f1_s], dim=1))
         dr1_f, ds1_f = self.dec_cross_r[3](dr1, ds1), self.dec_cross_s[3](ds1, dr1)
 
-        return {'regression': self.final_reg(dr1_f), 'segmentation': torch.softmax(self.final_seg(ds1_f), dim=1)}
+        return {
+            'regression': self.final_reg(dr1_f), 
+            'segmentation': self.final_seg(ds1_f)
+        }
 
 grid_size = 9
 x_mon = y_mon = np.linspace(10, 90, grid_size)
@@ -507,8 +528,7 @@ pump_locations = [(5, 5), (25, 15), (75, 35), (55, 55), (95, 95)]
 pump_points = torch.tensor(pump_locations, dtype=torch.long)
 all_points = torch.unique(torch.cat([collocation_points, pump_points]), dim=0)
 
-def pde_constraint_loss(pred_k, input_tensor, all_points,
-                       scaler_y, scalers_x):
+def pde_constraint_loss(pred_k, input_tensor, all_points, scaler_y, scalers_x):
     device = pred_k.device
     mu_logK = torch.tensor(scaler_y.mean_, device=device).view(1,1,1,1)
     std_logK = torch.tensor(scaler_y.scale_, device=device).view(1,1,1,1)
@@ -565,17 +585,48 @@ def pde_constraint_loss(pred_k, input_tensor, all_points,
     return weighted_error.mean()
 
 class UnifiedLoss(nn.Module):    
-    def __init__(self, all_points, scaler_y, scalers_x):
+    def __init__(self, all_points, scaler_y, scalers_x, k_threshold_val=0.01):
         super().__init__()
-        self.all_points, self.scaler_y, self.scalers_x = all_points, scaler_y, scalers_x
-        self.log_var_seg = nn.Parameter(torch.zeros(1)); self.log_var_reg = nn.Parameter(torch.zeros(1)); self.log_var_pde = nn.Parameter(torch.zeros(1))
-        self.ce_loss = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 0.9])); self.mse_loss = nn.MSELoss()
+        self.all_points = all_points
+        self.scaler_y = scaler_y
+        self.scalers_x = scalers_x
+        
+        self.log_var_seg = nn.Parameter(torch.zeros(1))
+        self.log_var_reg = nn.Parameter(torch.zeros(1))
+        self.log_var_pde = nn.Parameter(torch.zeros(1))
+        self.log_weight_hard = nn.Parameter(torch.tensor(0.0))
+        
+        norm_thresh = (np.log(k_threshold_val) - scaler_y.mean_[0]) / scaler_y.scale_[0]
+        self.register_buffer('k_threshold', torch.tensor(norm_thresh, dtype=torch.float32))
+
+        self.ce_loss = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 0.9]))
+        self.mse_loss = nn.MSELoss()
+
     def forward(self, pred_k, true_k, pred_seg, true_seg, input_tensor):
         l_seg = self.ce_loss(pred_seg, true_seg.long().squeeze(1))
         l_reg = self.mse_loss(pred_k, true_k)
         l_pde = pde_constraint_loss(pred_k, input_tensor, self.all_points, self.scaler_y, self.scalers_x)
-        total = (torch.exp(-self.log_var_seg) * l_seg + torch.exp(-self.log_var_reg) * l_reg + torch.exp(-self.log_var_pde) * l_pde + self.log_var_seg + self.log_var_reg + self.log_var_pde)
-        return total, {'total': total.item(), 'seg': l_seg.item(), 'reg': l_reg.item()}
+        
+        pred_mask = torch.argmax(pred_seg, dim=1, keepdim=True)
+        low_k_violations = F.relu(self.k_threshold - pred_k)
+        l_hard = (low_k_violations * pred_mask.float()).mean()
+
+        total = (
+            torch.exp(-self.log_var_seg) * l_seg + 
+            torch.exp(-self.log_var_reg) * l_reg + 
+            torch.exp(-self.log_var_pde) * l_pde + 
+            torch.exp(self.log_weight_hard) * l_hard +
+            self.log_var_seg + self.log_var_reg + self.log_var_pde
+        )
+        
+        return total, {
+            'total': total.item(), 
+            'seg': l_seg.item(), 
+            'reg': l_reg.item(), 
+            'pde': l_pde.item(),
+            'hard': l_hard.item(),
+            'weight_hard': torch.exp(self.log_weight_hard).item()
+        }
 
 X = np.load("H_matrix.npy"); Y = np.load("K_matrix.npy"); Y_seg = np.load("Fracture_matrix.npy")
 X_reshaped = X.reshape(num_sets*3, 100, 100, input_channels)
@@ -587,7 +638,7 @@ scaler_y = StandardScaler().fit(Y.reshape(-1,1))
 Y_std = scaler_y.transform(Y.reshape(-1,1)).reshape((num_sets*3),100, 100)
 X_t = torch.from_numpy(X_std).permute(0,3,1,2).float(); Y_t = torch.from_numpy(Y_std).unsqueeze(1).float(); Y_seg_t = torch.from_numpy(Y_seg).long()
 
-# --- Stratified Random Sampling 
+# Random Sampling 
 train_0_100 = np.random.choice(np.arange(0, num_sets), int(train_percentage*num_sets), replace=False)
 val_0_100_pool = np.setdiff1d(np.arange(0, num_sets), train_0_100)
 val_0_100 = np.random.choice(val_0_100_pool, int(validation_percentage*num_sets), replace=False)
@@ -606,7 +657,7 @@ all_indices = np.arange(X_t.shape[0])
 test_indices = np.setdiff1d(all_indices, np.concatenate([train_indices, val_indices]))
 
 np.save('train_indices.npy', train_indices); np.save('val_indices.npy', val_indices)
-
+# Training function
 def train_model(model, train_loader, val_loader, num_epochs=45, lr=0.001):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device); optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
@@ -626,7 +677,7 @@ def train_model(model, train_loader, val_loader, num_epochs=45, lr=0.001):
                 out = model(xb); loss, _ = loss_fn(out['regression'], yb_reg, out['segmentation'], yb_seg, xb); v_loss += loss.item()
         avg_v = v_loss/len(val_loader)
         if avg_v < best_loss: best_loss = avg_v; torch.save(model.state_dict(), 'best_model.pth')
-
+# Testing function
 def test_model(model, test_loader, scaler_y, device='cuda', sample_indices=None, save_results=True):
     model.eval(); device = torch.device(device if torch.cuda.is_available() else "cpu")
     num_test = len(test_loader.dataset)
@@ -684,4 +735,3 @@ model = PI_XNET(input_channels=input_channels)
 train_model(model, train_loader, val_loader)
 model.load_state_dict(torch.load('best_model.pth'))
 test_metrics = test_model(model, test_loader, scaler_y, device='cuda', sample_indices={'low': [-1], 'medium': [-1], 'high': [-1]})
- #%%    
