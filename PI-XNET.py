@@ -530,51 +530,61 @@ def pde_constraint_loss(pred_k, input_tensor, all_points, scaler_y, scalers_x):
     K = torch.clamp(K, min=1e-7, max=1e7)
     dh_dx_norm = input_tensor[:, 1::3, :, :]
     dh_dy_norm = input_tensor[:, 2::3, :, :]
-
+    
+    num_pumps = dh_dx_norm.shape[1]
+    
     std_dhx = torch.tensor(
         [scalers_x[i].scale_[0] for i in range(1, input_tensor.shape[1], 3)],
         device=device
-    ).view(1, -1, 1, 1)
+    ).view(1, num_pumps, 1, 1)
 
     std_dhy = torch.tensor(
         [scalers_x[i].scale_[0] for i in range(2, input_tensor.shape[1], 3)],
         device=device
-    ).view(1, -1, 1, 1)
+    ).view(1, num_pumps, 1, 1)
+
 
     dh_dx = dh_dx_norm * std_dhx
     dh_dy = dh_dy_norm * std_dhy
+    
+    K_expanded = K.expand(-1, num_pumps, -1, -1)  # [B, Np, H, W]
 
-    grad_x = dh_dx.mean(dim=1, keepdim=True)
-    grad_y = dh_dy.mean(dim=1, keepdim=True)
-
-    grad_x = torch.clamp(grad_x, -1e3, 1e3)
-    grad_y = torch.clamp(grad_y, -1e3, 1e3)
-    qx = -K * grad_x
-    qy = -K * grad_y
+    qx = -K_expanded * dh_dx
+    qy = -K_expanded * dh_dy
+    
     dqdx = (qx[:, :, 2:, 1:-1] - qx[:, :, :-2, 1:-1]) / (2 * cell_size)
     dqdy = (qy[:, :, 1:-1, 2:] - qy[:, :, 1:-1, :-2]) / (2 * cell_size)
 
     div_q = dqdx + dqdy
-    div_q_padded = F.pad(div_q, (1,1,1,1))
-    pumping_mask = torch.zeros_like(div_q_padded)
-    expected_div = torch.zeros_like(div_q_padded)
-    pump_rates = [0.001]*len(pump_locations)
 
-    for (x, y), rate in zip(pump_locations, pump_rates):
-        if x < div_q_padded.shape[2] and y < div_q_padded.shape[3]:
-            pumping_mask[:, 0, x, y] = 1.0
-            expected_div[:, 0, x, y] = rate/(cell_size**2)
-            
+    
+    div_q_padded = F.pad(div_q, (1,1,1,1))
+    expected_div = torch.zeros_like(div_q_padded)
+    pumping_mask = torch.zeros_like(div_q_padded)
+
+    pump_rates = [0.001] * len(pump_locations)
+
+    for pump_id, ((x, y), rate) in enumerate(zip(pump_locations, pump_rates)):
+        if pump_id < num_pumps and x < div_q_padded.shape[2] and y < y < div_q_padded.shape[3]:
+            pumping_mask[:, pump_id, x, y] = 1.0
+            expected_div[:, pump_id, x, y] = rate / (cell_size ** 2)
+    
+    
     idx_x = all_points[:, 0]
     idx_y = all_points[:, 1]
 
-    div_q_colloc = div_q_padded[:, 0, idx_x, idx_y]
-    expected_div_colloc = expected_div[:, 0, idx_x, idx_y]
-    pumping_mask_colloc = pumping_mask[:, 0, idx_x, idx_y]
+    div_q_colloc = div_q_padded[:, :, idx_x, idx_y]          
+    expected_div_colloc = expected_div[:, :, idx_x, idx_y]  
+    pumping_mask_colloc = pumping_mask[:, :, idx_x, idx_y] 
+
     squared_error = (div_q_colloc - expected_div_colloc) ** 2
+
     weight_mask = 1.0 + 3.0 * pumping_mask_colloc
     weighted_error = squared_error * weight_mask
-    return weighted_error.mean()
+
+    loss_pde = weighted_error.mean()
+
+    return loss_pde
 
 class UnifiedLoss(nn.Module):    
     def __init__(self, all_points, scaler_y, scalers_x, k_threshold_val=0.01):
