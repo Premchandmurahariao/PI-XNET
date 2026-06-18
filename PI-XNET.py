@@ -330,14 +330,6 @@ np.save("K_matrix.npy",K_matrix)
 np.save("Fracture_matrix.npy",Fracture_matrix)
 np.save("H_matrix.npy",H_matrix)     
 #%%
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, Subset
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, r2_score, jaccard_score
 # PI-XNET Algorithm Starts
 import torch
 import torch.nn as nn
